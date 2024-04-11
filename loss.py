@@ -1,23 +1,25 @@
-import tensorflow as tf
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
-class DiceLoss(tf.keras.losses.Loss):
-    def __init__(self, smooth=1.0, num_classes=3, name="dice_loss"):
-        super(DiceLoss, self).__init__(name=name)
+class DiceLoss(nn.Module):
+    def __init__(self, smooth=1.0, num_classes=3):
+        super(DiceLoss, self).__init__()
         self.smooth = smooth
         self.num_classes = num_classes
 
-    def call(self, y_true, y_pred):
+    def forward(self, y_pred, y_true):
         # One-hot encode y_true
-        y_true_one_hot = tf.one_hot(tf.cast(y_true, tf.int32), depth=self.num_classes)
+        y_true_one_hot = F.one_hot(y_true, num_classes=self.num_classes).permute(0, 3, 1, 2).float()
         
         # Apply softmax to y_pred to get probability distributions
-        y_pred = tf.nn.softmax(y_pred, axis=-1)
+        y_pred = F.softmax(y_pred, dim=1)
         
         # Calculate Dice Loss for each class
-        intersection = tf.reduce_sum(y_pred * y_true_one_hot, axis=[1, 2])
-        union = tf.reduce_sum(y_pred, axis=[1, 2]) + tf.reduce_sum(y_true_one_hot, axis=[1, 2])
+        intersection = (y_pred * y_true_one_hot).sum(dim=(2, 3))
+        union = y_pred.sum(dim=(2, 3)) + y_true_one_hot.sum(dim=(2, 3))
         
         dice_score = (2. * intersection + self.smooth) / (union + self.smooth)
-        dice_loss = 1 - tf.reduce_mean(dice_score)  # Average across classes and batch
+        dice_loss = 1 - dice_score.mean()  # Average across classes and batch
 
         return dice_loss

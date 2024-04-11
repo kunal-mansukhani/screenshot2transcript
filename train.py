@@ -1,66 +1,128 @@
-import tensorflow as tf
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader
+from torchvision import transforms
+from dataset import SpeechBubbleDataset  
+from model import BubbleNet
+from utils import calculate_class_percentages, visualize_mask_distribution, count_class_predictions
+from torchvision.transforms import Lambda
+from PIL import Image
 import numpy as np
-import matplotlib.pyplot as plt
-from keras.optimizers import Adam
-from keras.losses import SparseCategoricalCrossentropy
-from model import BubbleNet  # Assuming BubbleNet is correctly defined for TensorFlow
-from loss import DiceLoss  # Assuming dice_loss is correctly defined as per the DiceLoss class provided earlier
+from loss import DiceLoss
+import matplotlib.pyplot as plt 
 
-def load_image_and_mask(img_path, mask_path):
-    img = tf.io.read_file(img_path)
-    img = tf.image.decode_png(img, channels=3)
-    img = tf.image.resize(img, [256, 256])
-    img = img / 255.0  # Normalize images to [0, 1]
-    
-    mask = tf.io.read_file(mask_path)
-    mask = tf.image.decode_png(mask, channels=1)
-    mask = tf.image.resize(mask, [256, 256], method='nearest')
-    mask = tf.squeeze(mask)  # Remove channel dimension for SparseCategoricalCrossentropy
-    
-    return img, mask
+# Set device
+print(torch.cuda.is_available())
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-def prepare_dataset(path, mask_path, batch_size):
-    # List dataset files, accommodating various image formats
-    image_dir = tf.io.gfile.glob(path + '/*.jpg') + tf.io.gfile.glob(path + '/*.jpeg') + \
-                tf.io.gfile.glob(path + '/*.png') + tf.io.gfile.glob(path + '/*.webp')
-    print(image_dir)
+# Hyperparameters
+num_epochs = 50
+batch_size = 4
+learning_rate = 0.001
+patience = 10
 
-    # Generate mask filenames based on the image filenames
-    mask_dir = [mask_path + '/' + tf.strings.split(tf.strings.split(s, '/')[-1], '.')[0] + '_mask.png' for s in image_dir]
-    print(mask_dir)
+# Data preprocessing
+image_transform = transforms.Compose([
+    transforms.Resize((256, 256)),  # Default interpolation is bilinear, which is fine for images
+    transforms.ToTensor(),  # Scales image data to [0, 1]
+])
 
-    dataset = tf.data.Dataset.from_tensor_slices((image_dir, mask_dir))
-    dataset = dataset.map(load_image_and_mask, num_parallel_calls=tf.data.AUTOTUNE)
-    dataset = dataset.batch(batch_size)
-    dataset = dataset.prefetch(tf.data.AUTOTUNE)
-    return dataset
+# Transform for masks
+mask_transform = transforms.Compose([
+    transforms.Resize((256, 256), interpolation=Image.NEAREST),  # Use nearest neighbor interpolation
+    Lambda(lambda x: torch.from_numpy(np.array(x, dtype=np.int64))),  # Directly convert to Tensor without scaling
+])
+# Load the dataset
+train_dataset = SpeechBubbleDataset('data', 'train', img_transform=image_transform, mask_transform=mask_transform)
+val_dataset = SpeechBubbleDataset('data', 'test', img_transform=image_transform, mask_transform=mask_transform)
 
-# Paths to your data
-train_image_path = 'data/train/augmented_dataset'  # Adjust these paths
-train_mask_path = 'data/train/augmented_masks'  # Adjust these paths
-test_image_path = 'data/test/dataset'  # Adjust these paths
-test_mask_path = 'data/test/masks'  # Adjust these paths
-train_dataset = prepare_dataset(train_image_path, train_mask_path, batch_size=4)
-val_dataset = prepare_dataset(test_image_path, test_mask_path, batch_size=4)
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False)
+val_loader = DataLoader(val_dataset, batch_size=batch_size)
 
+# Create an instance of the BubbleClassifier model
+model = BubbleNet().to(device)
+
+# Loss function and optimizer
+cross_entropy_loss = nn.CrossEntropyLoss()
 dice_loss = DiceLoss()
+optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-5)
 
-model = BubbleNet(num_classes=3, input_shape=(256, 256, 3))
-model.compile(
-    optimizer=Adam(learning_rate=0.001, weight_decay=1e-5),
-    loss=lambda y_true, y_pred: SparseCategoricalCrossentropy(from_logits=True)(y_true, y_pred) + dice_loss(y_true, y_pred),
-    metrics=['accuracy']
-)
+training_losses = []
+validation_losses = []
 
-history = model.fit(train_dataset, validation_data=val_dataset, epochs=50)
+best_val_loss = float('inf')
+no_improve_epochs = 0
+early_stopping_triggered = False
+
+
+# Training loop
+for epoch in range(num_epochs):
+    model.train()
+    train_loss = 0.0
+    step = 0
+    for images, masks in train_loader:
+        images = images.to(device)
+        masks = masks.to(device)
+        #print(calculate_class_percentages(masks))
+        optimizer.zero_grad()
+        
+        outputs = model(images)
+        #print(count_class_predictions(outputs)) 
+        loss = cross_entropy_loss(outputs, masks) + dice_loss(outputs, masks)
+        loss.backward()
+        optimizer.step()
+        
+        train_loss += loss.item() * images.size(0)
+        step += 1
+        
+        if step % 4 == 0:
+            print(f'Loss: {loss.item()}', f'Epoch: {epoch}', f'Step: {step}')
+            
+    
+    epoch_train_loss = train_loss / len(train_dataset)
+    
+    training_losses.append(epoch_train_loss)
+    model.eval()
+    val_loss = 0.0
+    with torch.no_grad():
+        for images, masks in val_loader:
+            images = images.to(device)
+            masks = masks.to(device)
+            
+            
+            outputs = model(images)
+            loss =  cross_entropy_loss(outputs, masks) + dice_loss(outputs, masks)
+            
+            val_loss += loss.item() * images.size(0)
+    
+    epoch_val_loss = val_loss / len(val_dataset)
+    validation_losses.append(epoch_val_loss)
+    current_lr = optimizer.param_groups[0]['lr']
+    print(f'Epoch [{epoch+1}/{num_epochs}], Train Loss: {epoch_train_loss:.4f}, Validation Loss: {epoch_val_loss:.4f}, LR: {current_lr}')
+    if val_loss < best_val_loss:
+        best_val_loss = val_loss
+        no_improve_epochs = 0
+        torch.save(model.state_dict(), 'best_bubble_classifier.pth')
+    else:
+        no_improve_epochs += 1
+        if no_improve_epochs >= patience:
+            print("Early stopping triggered")
+            early_stopping_triggered = True
+            break
+
+if not early_stopping_triggered:
+    print("Completed all epochs without early stopping.")
 
 plt.figure(figsize=(10, 6))
-plt.plot(history.history['loss'], label='Training Loss')
-plt.plot(history.history['val_loss'], label='Validation Loss')
+plt.plot(training_losses, label='Training Loss')
+plt.plot(validation_losses, label='Validation Loss')
 plt.title('Training and Validation Loss')
-plt.xlabel('Epoch')
+plt.xlabel('Epochs')
 plt.ylabel('Loss')
 plt.legend()
 plt.show()
 
-model.save('checkpoints/bubble_classifier_mobile.h5')
+# Save the trained model
+print(f"Best validation loss: {best_val_loss}")
+torch.save(model.state_dict(), 'checkpoints/bubble_classifier_mobile.pth')

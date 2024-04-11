@@ -9,7 +9,7 @@ from utils import draw_segmentation_map
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 model = BubbleNet().to(device)
-model.load_state_dict(torch.load('checkpoints/bubble_classifier_mobile.pth', map_location=device))  
+model.load_state_dict(torch.load('checkpoints/best_bubble_classifier.pth', map_location=device))  
 model.eval()
 
 image_transform = transforms.Compose([
@@ -17,7 +17,7 @@ image_transform = transforms.Compose([
     transforms.ToTensor(),
 ])
 
-image_path = 'test_1.jpg' 
+image_path = 'test2.jpeg' 
 image = Image.open(image_path).convert('RGB')
 image = image_transform(image)
 image = image.unsqueeze(0)  # image is now of shape [1, 3, 512, 512]

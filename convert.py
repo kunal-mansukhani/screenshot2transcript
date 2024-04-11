@@ -1,33 +1,37 @@
+import numpy as np
 import torch
-from model import BubbleNet  # Ensure this is your PyTorch model. It should be correctly defined in the model.py file.
-
-# Instantiate your model
-model = BubbleNet()
-model.load_state_dict(torch.load('checkpoints/bubble_classifier_mobile.pth', map_location=torch.device('cpu')))  # Ensure the model and checkpoint are compatible
-model.eval()
-
-# Create dummy input that matches the model's input shape
-dummy_input = torch.randn(1, 3, 256, 256)  # Adjust the dimensions as per your model's requirements
-
-# Export the model to ONNX format
-torch.onnx.export(model, dummy_input, 'model.onnx', export_params=True, opset_version=12, do_constant_folding=True)
+from model import BubbleNet
 import onnx
 from onnx_tf.backend import prepare
-
-# Load the ONNX model
-onnx_model = onnx.load('model.onnx')
-
-# Prepare the TensorFlow representation
-tf_rep = prepare(onnx_model)
-
-# Export the model as a TensorFlow graph
-tf_rep.export_graph('model_tf')
 import tensorflow as tf
 
-# Convert the TensorFlow model directory to a TensorFlow Lite model
-converter = tf.lite.TFLiteConverter.from_saved_model('model_tf')
-tflite_model = converter.convert()
+def representative_dataset_gen():
+    for _ in range(100):
+        yield [np.random.rand(1, 256, 256, 3).astype(np.float32)]
 
-# Save the TFLite model to disk
-with open('model.tflite', 'wb') as f:
-    f.write(tflite_model)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = BubbleNet().to(device)
+model.load_state_dict(torch.load('checkpoints/bubble_classifier_mobile.pth', map_location=device))
+model.eval()
+
+dummy_input = torch.randn(1, 3, 256, 256, device=device)
+torch.onnx.export(model, dummy_input, 'model.onnx', export_params=True, opset_version=12, do_constant_folding=True, input_names=['input'], output_names=['output'])
+
+onnx_model = onnx.load('model.onnx')
+tf_rep = prepare(onnx_model)
+tf_rep.export_graph('model_tf')
+
+converter = tf.lite.TFLiteConverter.from_saved_model('model_tf')
+converter.optimizations = [tf.lite.Optimize.DEFAULT]
+converter.representative_dataset = representative_dataset_gen
+converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
+converter.inference_input_type = tf.int8
+converter.inference_output_type = tf.int8
+
+try:
+    tflite_model = converter.convert()
+    with open('model.tflite', 'wb') as f:
+        f.write(tflite_model)
+    print("TFLite model has been saved successfully.")
+except Exception as e:
+    print(f"Failed to convert TF to TFLite due to: {e}")
