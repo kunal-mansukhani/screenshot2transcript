@@ -46,7 +46,7 @@ def visualize_segmentation(segmentation_map, title="Segmentation Map", save_path
 
 # File paths
 tflite_model_path = 'model.tflite'
-test_image_path = 'test_1.jpg'
+test_image_path = 'test_1.jpeg'
 
 # Run the model and process the output
 output = run_tflite_model(tflite_model_path, test_image_path)
