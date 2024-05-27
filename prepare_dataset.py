@@ -2,10 +2,11 @@ import json
 import os
 import shutil
 import random
+from PIL import Image
 
 # Paths
-original_annotations_path = 'data/train/annotations/result.json'
-original_images_dir = 'data/train/annotations/images'
+original_annotations_path = 'data/all/labels.json'
+original_images_dir = 'data/all/images'
 training_images_dir = 'data/training/images'
 validation_images_dir = 'data/validation/images'
 training_annotations_path = 'data/training/labels.json'
@@ -22,7 +23,7 @@ with open(original_annotations_path, 'r') as f:
 # Split images
 images = annotations['images']
 random.shuffle(images)
-split_index = int(len(images) * 0.85)
+split_index = int(len(images) * 0.95)
 training_images = images[:split_index]
 validation_images = images[split_index:]
 
@@ -57,14 +58,31 @@ with open(training_annotations_path, 'w') as f:
 with open(validation_annotations_path, 'w') as f:
     json.dump(validation_annotations, f)
 
-# Copy images to new directories
-def copy_images(images, source_dir, target_dir):
+# Convert images to .jpg and copy to new directories
+def convert_and_copy_images(images, source_dir, target_dir):
     for image in images:
         src_path = os.path.join(source_dir, image['file_name'])
-        dst_path = os.path.join(target_dir, image['file_name'])
-        shutil.copy(src_path, dst_path)
+        file_name_without_ext, ext = os.path.splitext(image['file_name'])
+        new_file_name = file_name_without_ext + '.jpg'
+        dst_path = os.path.join(target_dir, new_file_name)
+        
+        # Convert image to .jpg
+        with Image.open(src_path) as img:
+            rgb_img = img.convert('RGB')
+            rgb_img.save(dst_path, 'JPEG')
 
-copy_images(training_images, original_images_dir, training_images_dir)
-copy_images(validation_images, original_images_dir, validation_images_dir)
+        # Update the file name in the annotations
+        image['file_name'] = new_file_name
 
-print('Dataset split and files created successfully.')
+# Process and copy images
+convert_and_copy_images(training_images, original_images_dir, training_images_dir)
+convert_and_copy_images(validation_images, original_images_dir, validation_images_dir)
+
+# Update the annotations with the new file names
+with open(training_annotations_path, 'w') as f:
+    json.dump(training_annotations, f)
+
+with open(validation_annotations_path, 'w') as f:
+    json.dump(validation_annotations, f)
+
+print('Dataset split, files created, and images converted successfully.')
